@@ -166,10 +166,9 @@ contract Deploy is Script {
             return ChainConfig({
                 name: "Base Sepolia",
                 vrfCoordinator: 0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE,
-                // TODO: Fill in Base Sepolia gas lane keyHash from
+                // Verified against Chainlink VRF v2.5 docs:
                 // https://docs.chain.link/vrf/v2-5/supported-networks#base-sepolia-testnet
-                // Set to bytes32(0) so pre-flight reverts loudly until set.
-                gasLane: bytes32(0),
+                gasLane: 0x9e1344a1247c8a1785d0a4681a27152bffdb43666ae5bf7d14d24a5efd44bf71,
                 usdc: 0x036CbD53842c5426634e7929541eC2318f3dCF7e,
                 mxnb: address(0)
             });
