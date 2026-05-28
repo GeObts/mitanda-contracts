@@ -81,6 +81,21 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
     ///         delegate to. Deployed once per chain; cannot be changed.
     address public immutable tandaImplementation;
 
+    /// @notice Soulbound Pass NFT contract. Auto-minted on `join` /
+    ///         `joinWithInvite` and flagged on `markDefaulter`.
+    ///         Immutable — set once at Manager deployment.
+    address public immutable passNFT;
+
+    /// @notice Transferable Receipt NFT contract. Minted on each
+    ///         payout to the cycle's recipient with frozen-at-mint
+    ///         sponsored-collection metadata. Immutable.
+    address public immutable receiptNFT;
+
+    /// @notice Soulbound Completion NFT contract. Batch-minted at
+    ///         tanda completion to every still-active participant.
+    ///         Immutable.
+    address public immutable completionNFT;
+
     // ─────────────────────────────────────────────────────────────────────
     // Storage — treasury
     // ─────────────────────────────────────────────────────────────────────
@@ -248,20 +263,35 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
     ///                              call back into this contract.
     /// @param _treasury             Initial treasury address (2% platform
     ///                              fee recipient). Owner-configurable later.
+    /// @param _passNFT              Soulbound Pass NFT contract address.
+    ///                              Immutable; deployed once per chain.
+    /// @param _receiptNFT           Transferable Receipt NFT contract
+    ///                              address. Immutable.
+    /// @param _completionNFT        Soulbound Completion NFT contract
+    ///                              address. Immutable.
     constructor(
         address _tandaImplementation,
         address _vrfCoordinator,
         uint256 _subscriptionId,
         bytes32 _gasLane,
         uint32 _callbackGasLimit,
-        address _treasury
+        address _treasury,
+        address _passNFT,
+        address _receiptNFT,
+        address _completionNFT
     ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
         if (_tandaImplementation == address(0)) revert ZeroAddress();
         if (_treasury == address(0)) revert ZeroAddress();
         if (_callbackGasLimit == 0) revert ZeroAmount();
+        if (_passNFT == address(0)) revert ZeroAddress();
+        if (_receiptNFT == address(0)) revert ZeroAddress();
+        if (_completionNFT == address(0)) revert ZeroAddress();
         // _vrfCoordinator zero-check is handled by VRFConsumerBaseV2Plus.
 
         tandaImplementation = _tandaImplementation;
+        passNFT = _passNFT;
+        receiptNFT = _receiptNFT;
+        completionNFT = _completionNFT;
         treasury = _treasury;
 
         subscriptionId = _subscriptionId;
@@ -583,7 +613,10 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
                 creator: msg.sender,
                 sponsoredCollectionId: collectionId,
                 scheduledStart: scheduledStart,
-                privacy: privacyMode
+                privacy: privacyMode,
+                passNFT: passNFT,
+                receiptNFT: receiptNFT,
+                completionNFT: completionNFT
             })
             );
 

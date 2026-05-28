@@ -27,6 +27,27 @@ interface ITandaManager {
     function requestRandomnessForTanda(uint256 tandaId) external;
 }
 
+/// @notice Soulbound Pass NFT entry points the Tanda calls on join /
+///         defaulter mark. Singleton; address snapshotted at init.
+interface IMitandaPassNFT {
+    function mint(address participant, uint256 tandaId) external returns (uint256);
+    function markDefaulted(address participant, uint256 tandaId) external;
+}
+
+/// @notice Transferable Receipt NFT entry point used on each cycle
+///         payout. Singleton; address snapshotted at init.
+interface IMitandaReceiptNFT {
+    function mintReceipt(address recipient, uint256 tandaId, uint256 cycle, uint256 collectionId)
+        external
+        returns (uint256);
+}
+
+/// @notice Soulbound Completion NFT entry point used at tanda
+///         completion. Singleton; address snapshotted at init.
+interface IMitandaCompletionNFT {
+    function batchMint(address[] calldata participants, uint256 tandaId) external returns (uint256[] memory);
+}
+
 /// @title  Tanda
 /// @author Mi Tanda
 /// @notice Per-tanda state machine. **EIP-1167 implementation contract**:
@@ -166,6 +187,17 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
     ///         calls backed by a creator-signed EIP-712 invite.
     TandaPrivacy public privacy;
 
+    /// @notice Singleton NFT contracts wired by the Manager at clone
+    ///         init. Stored as regular slots (not immutable — clones
+    ///         can't have immutables). Set once in `initialize` and
+    ///         never reassigned. NFT calls are unconditional: if any
+    ///         of these is zero or misconfigured, every lifecycle
+    ///         action that touches the NFT will revert — the intended
+    ///         failure mode.
+    address public passNFT;
+    address public receiptNFT;
+    address public completionNFT;
+
     // ─────────────────────────────────────────────────────────────────────
     // Storage — lifecycle state
     // ─────────────────────────────────────────────────────────────────────
@@ -288,6 +320,9 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         if (params.manager == address(0)) revert ZeroAddress();
         if (params.creator == address(0)) revert ZeroAddress();
         if (params.contributionAmount == 0) revert ZeroAmount();
+        if (params.passNFT == address(0)) revert ZeroAddress();
+        if (params.receiptNFT == address(0)) revert ZeroAddress();
+        if (params.completionNFT == address(0)) revert ZeroAddress();
 
         __ReentrancyGuard_init();
         __EIP712_init("MiTanda", "1");
@@ -303,6 +338,9 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         sponsoredCollectionId = params.sponsoredCollectionId;
         scheduledStart = params.scheduledStart;
         privacy = params.privacy;
+        passNFT = params.passNFT;
+        receiptNFT = params.receiptNFT;
+        completionNFT = params.completionNFT;
 
         state = TandaState.OPEN;
     }
@@ -432,7 +470,11 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
 
         emit ParticipantJoined(participant, block.timestamp);
 
-        // TODO(NFT): passNFT.mint(participant, tandaId) — soulbound EIP-5192.
+        // Soulbound EIP-5192 Pass NFT — minted BEFORE the token transfer
+        // so the NFT existence tracks join-attempt, not transfer-success.
+        // If the safeTransferFrom below reverts, the whole tx (incl. this
+        // mint) rolls back atomically.
+        IMitandaPassNFT(passNFT).mint(participant, tandaId);
 
         IERC20(token).safeTransferFrom(participant, address(this), chargeAmount);
 
@@ -601,8 +643,13 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
 
         emit ParticipantDefaulted(participant, currentCycle, forfeitedInsurance, block.timestamp);
 
-        // TODO(NFT): passNFT.markDefaulted(participant, tandaId) — flags
-        // pass NFT's tokenURI status to "Defaulted" for off-chain display.
+        // Pass NFT flag last: if it fails (it shouldn't — the Pass NFT's
+        // `markDefaulted` is a silent no-op when the pass doesn't exist),
+        // Tanda's own `isActive = false` state has already been written
+        // and the event emitted. The pass NFT itself stays soulbound on
+        // the participant as reputation evidence; only its `isDefaulted`
+        // flag flips.
+        IMitandaPassNFT(passNFT).markDefaulted(participant, tandaId);
     }
 
     /// @dev Remove `participantIndex` from `payoutOrder` IF its slot is
@@ -650,7 +697,11 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         currentCycle = cyclePaid + 1;
         _settleCyclePayout(recipient, treasuryAddr, recipientAmount, platformAmount, organizerAmount, cyclePaid);
 
-        // TODO(NFT): receiptNFT.mintReceipt(recipient, tandaId, cyclePaid, sponsoredCollectionId)
+        // Receipt NFT mint with frozen-at-mint baseURI + ERC-2981 royalty.
+        // `cyclePaid` is the cycle that just paid out (NOT the new
+        // `currentCycle`). `sponsoredCollectionId` may be 0 — Receipt
+        // NFT handles go-dark via its default fallback URI.
+        IMitandaReceiptNFT(receiptNFT).mintReceipt(recipient, tandaId, cyclePaid, sponsoredCollectionId);
 
         if (currentCycle > payoutOrder.length) {
             _completeTanda();
@@ -697,7 +748,24 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
             _distributeSlashPool();
         }
         emit TandaCompleted(block.timestamp);
-        // TODO(NFT): completionNFT.batchMint(activeParticipants, tandaId)
+
+        // Completion NFTs minted LAST so all financial state is final
+        // before badges are issued. Build the active-participants array
+        // by scanning `participants` once and collecting `isActive`
+        // addresses. `activeParticipantCount == 0` produces an empty
+        // array, which `MitandaCompletionNFT.batchMint` handles as a
+        // no-op — no defensive branching needed here.
+        uint256 activeCount = activeParticipantCount;
+        address[] memory actives = new address[](activeCount);
+        uint256 outIdx = 0;
+        uint256 len = participants.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (participants[i].isActive) {
+                actives[outIdx] = participants[i].addr;
+                outIdx++;
+            }
+        }
+        IMitandaCompletionNFT(completionNFT).batchMint(actives, tandaId);
     }
 
     /// @dev Refund each active participant's insurance balance + any

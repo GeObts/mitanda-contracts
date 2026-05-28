@@ -63,6 +63,19 @@ interface ITanda {
         uint256 sponsoredCollectionId;
         uint256 scheduledStart;
         TandaPrivacy privacy;
+        /// @custom:doc passNFT       Soulbound Pass NFT singleton.
+        ///                           Auto-minted on `join` /
+        ///                           `joinWithInvite`; flagged on
+        ///                           `markDefaulter`.
+        address passNFT;
+        /// @custom:doc receiptNFT    Transferable Receipt NFT singleton.
+        ///                           Minted on each cycle payout with
+        ///                           frozen-at-mint sponsored metadata.
+        address receiptNFT;
+        /// @custom:doc completionNFT Soulbound Completion NFT singleton.
+        ///                           Batch-minted at tanda completion
+        ///                           to every still-active participant.
+        address completionNFT;
     }
 
     /// @notice One-shot initializer called by `TandaManager.createTanda`
