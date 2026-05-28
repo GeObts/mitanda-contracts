@@ -151,9 +151,13 @@ contract Deploy is Script {
             return ChainConfig({
                 name: "Base",
                 vrfCoordinator: 0xd5D517aBE5cF79B7e95eC98dB0f0277788aFF634,
-                // 30 gwei keyHash per Chainlink VRF v2.5 docs. VERIFY at
+                // 2 gwei keyHash per Chainlink VRF v2.5 docs. Picked over
+                // the 30 gwei lane because tanda cycle-1 is at minimum
+                // 1 day after start — VRF fulfillment latency in the
+                // seconds-to-minutes range is irrelevant, and 2 gwei is
+                // ~15x cheaper per request. Verify against
                 // https://docs.chain.link/vrf/v2-5/supported-networks#base-mainnet
-                gasLane: 0xdc2f87677b01473c763cb0aee938ed3341512f6057324a584e5944e786144d70,
+                gasLane: 0x00b81b5a830cb0a4009fbd8904de511e28631e62ce5ad231373d3cdad373ccab,
                 usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
                 mxnb: address(0)
             });
@@ -174,9 +178,11 @@ contract Deploy is Script {
             return ChainConfig({
                 name: "Arbitrum One",
                 vrfCoordinator: 0x3C0Ca683b403E37668AE3DC4FB62F4B29B6f7a3e,
-                // 30 gwei keyHash per Chainlink VRF v2.5 docs. VERIFY at
+                // 2 gwei keyHash per Chainlink VRF v2.5 docs. Same
+                // rationale as Base mainnet: low cost, latency
+                // doesn't matter for our use case. Verify against
                 // https://docs.chain.link/vrf/v2-5/supported-networks#arbitrum-mainnet
-                gasLane: 0x9e9e46732b32662b9adc6f3abdf6c5e926a666f174a786439a95e1ac1e9da8a7,
+                gasLane: 0x9e9e46732b32662b9adc6f3abdf6c5e926a666d174a4d6b8e39c4cca76a38897,
                 usdc: 0xaf88d065e77c8cC2239327C5EDb3A432268e5831,
                 mxnb: 0xF197FFC28c23E0309B5559e7a166f2c6164C80aA
             });
