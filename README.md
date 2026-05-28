@@ -1,6 +1,6 @@
 # Mi Tanda — Contracts
 
-On-chain ROSCA (rotating savings club) dApp targeting Arbitrum One and Base. Mi Tanda brings Latin America's tanda savings tradition on-chain with built-in defaulter insurance, automatic NFT receipts, and rotating artist/sponsor collections.
+On-chain ROSCA (rotating savings club) dApp targeting Arbitrum One and Base. Mi Tanda brings Latin America's tanda savings tradition onchain with built-in defaulter insurance, automatic NFT receipts, and rotating artist/sponsor collections.
 
 ## Architecture
 
