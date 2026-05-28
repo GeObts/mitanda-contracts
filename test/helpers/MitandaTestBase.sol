@@ -92,6 +92,10 @@ abstract contract MitandaTestBase is Test {
 
         // 7. Deploy Manager. Its actual address MUST match the prediction
         //    or every NFT call from any tanda will fail forever.
+        // _initialOwner = address(this): test contract is both deployer
+        // and intended owner, so the constructor skips transferOwnership
+        // (Chainlink reverts on self-transfer). Same effective behavior
+        // as the pre-_initialOwner version.
         manager = new TandaManager(
             address(tandaImpl),
             address(vrfCoordinator),
@@ -101,7 +105,8 @@ abstract contract MitandaTestBase is Test {
             TREASURY,
             address(passNFT),
             address(receiptNFT),
-            address(completionNFT)
+            address(completionNFT),
+            address(this)
         );
         require(address(manager) == predictedManager, "MitandaTestBase: Manager address prediction failed");
 

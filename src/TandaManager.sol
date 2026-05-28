@@ -249,10 +249,18 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
     // ─────────────────────────────────────────────────────────────────────
 
     /// @notice Deploys the Manager as the singleton orchestrator.
-    /// @dev    `VRFConsumerBaseV2Plus` hard-wires the owner to `msg.sender`
-    ///         via `ConfirmedOwner(msg.sender)`. To run with a different
-    ///         initial owner, call `transferOwnership` immediately
-    ///         post-deploy (Chainlink's two-step transfer).
+    /// @dev    `VRFConsumerBaseV2Plus` hard-wires `s_owner = msg.sender`
+    ///         via `ConfirmedOwner(msg.sender)`. For CREATE2 deploys
+    ///         (where `msg.sender` is the deterministic deployer
+    ///         contract rather than the operator EOA) we propose
+    ///         ownership to `_initialOwner` here so the deploy script
+    ///         can finalize via `acceptOwnership()` from that wallet.
+    ///         Chainlink's two-step transfer is the only path
+    ///         available — `_transferOwnership` in
+    ///         `ConfirmedOwnerWithProposal` is `private`. The transfer
+    ///         is skipped when `_initialOwner == msg.sender` (e.g. tests
+    ///         deploying directly), so the in-test ownership semantics
+    ///         are unchanged.
     /// @param _tandaImplementation  EIP-1167 implementation that
     ///                              `createTanda` will clone. Must already
     ///                              be deployed and verified on this chain.
@@ -269,6 +277,10 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
     ///                              address. Immutable.
     /// @param _completionNFT        Soulbound Completion NFT contract
     ///                              address. Immutable.
+    /// @param _initialOwner         Wallet that will own the Manager after
+    ///                              `acceptOwnership()`. Required nonzero.
+    ///                              When equal to `msg.sender` the transfer
+    ///                              is skipped (no pending-owner window).
     constructor(
         address _tandaImplementation,
         address _vrfCoordinator,
@@ -278,7 +290,8 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
         address _treasury,
         address _passNFT,
         address _receiptNFT,
-        address _completionNFT
+        address _completionNFT,
+        address _initialOwner
     ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
         if (_tandaImplementation == address(0)) revert ZeroAddress();
         if (_treasury == address(0)) revert ZeroAddress();
@@ -286,6 +299,7 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
         if (_passNFT == address(0)) revert ZeroAddress();
         if (_receiptNFT == address(0)) revert ZeroAddress();
         if (_completionNFT == address(0)) revert ZeroAddress();
+        if (_initialOwner == address(0)) revert ZeroAddress();
         // _vrfCoordinator zero-check is handled by VRFConsumerBaseV2Plus.
 
         tandaImplementation = _tandaImplementation;
@@ -303,6 +317,13 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
 
         nextTandaId = 1;
         nextCollectionId = 1;
+
+        // Two-step ownership handoff for CREATE2 deploys. Skipped when
+        // the deployer wallet is also the intended owner — Chainlink's
+        // `_transferOwnership` reverts on self-transfer.
+        if (_initialOwner != msg.sender) {
+            transferOwnership(_initialOwner);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
