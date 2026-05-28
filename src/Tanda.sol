@@ -292,6 +292,11 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         uint256 totalPool, uint256 perActiveParticipant, uint256 treasuryShare, uint256 creatorShare, uint256 dust
     );
     event TandaCompleted(uint256 completionTimestamp);
+    /// @notice Emitted when a tanda completes via full collapse — every
+    ///         participant defaulted, no honest survivors. The treasury
+    ///         absorbs the entire remaining token balance; all prior
+    ///         pendingWithdrawals and insurance balances are forfeited.
+    event FullCollapse(address indexed treasury, uint256 amount);
     event Withdrawn(address indexed claimant, uint256 amount);
 
     // ─────────────────────────────────────────────────────────────────────
@@ -609,12 +614,22 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
     ///         is moved to `slashedPool`, and (if their slot in
     ///         `payoutOrder` is still pending) it is removed via O(n)
     ///         left-shift.
+    /// @dev    If pruning drives `payoutOrder.length < currentCycle`
+    ///         (no remaining cycles can pay out), the tanda
+    ///         auto-completes in the same transaction via
+    ///         `_completeTanda`. With surviving actives, normal
+    ///         completion runs; with zero actives, full collapse
+    ///         sweeps the entire token balance to treasury
+    ///         (`FullCollapse` event). Defensive: the
+    ///         `payoutOrderAssigned` guard prevents auto-completion
+    ///         in the (unreachable in practice) window before the
+    ///         VRF callback assigns the payout order.
     /// @custom:reverts WrongTandaState           if not ACTIVE.
     /// @custom:reverts NotParticipant            if `participant` isn't in the tanda.
     /// @custom:reverts AlreadyMarkedDefaulter    if already inactive.
     /// @custom:reverts NotDefaulter              if `paidUntilCycle >= currentCycle`.
     /// @custom:reverts GracePeriodNotExpired     if called before deadline + grace.
-    /// @custom:emits   ParticipantDefaulted.
+    /// @custom:emits   ParticipantDefaulted, plus TandaCompleted or FullCollapse if auto-completion fires.
     function markDefaulter(address participant) external onlyInState(TandaState.ACTIVE) {
         uint256 idxPlus1 = addressToParticipantIndex[participant];
         if (idxPlus1 == 0) revert NotParticipant();
@@ -650,6 +665,16 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         // the participant as reputation evidence; only its `isDefaulted`
         // flag flips.
         IMitandaPassNFT(passNFT).markDefaulted(participant, tandaId);
+
+        // Auto-complete: pruning may have driven `payoutOrder.length`
+        // below `currentCycle`, meaning no payouts remain. Without this,
+        // the next `triggerPayout` would access `payoutOrder[currentCycle-1]`
+        // out of bounds and the tanda would be stuck in ACTIVE forever.
+        // The `payoutOrderAssigned` clause prevents auto-completion in
+        // the (in-practice unreachable) window before VRF callback fires.
+        if (payoutOrderAssigned && payoutOrder.length < currentCycle) {
+            _completeTanda();
+        }
     }
 
     /// @dev Remove `participantIndex` from `payoutOrder` IF its slot is
@@ -741,10 +766,23 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
         return true;
     }
 
+    /// @dev Two completion paths:
+    ///      1. Normal (`activeParticipantCount > 0`): refund insurance
+    ///         and excess contributions to actives, distribute slash
+    ///         pool 95/2/3, mint Completion NFTs.
+    ///      2. Full collapse (`activeParticipantCount == 0`): every
+    ///         participant defaulted. Existing pendingWithdrawals and
+    ///         insurance balances are forfeited; the entire token
+    ///         balance sweeps to treasury. No Completion NFTs minted.
     function _completeTanda() internal {
+        if (activeParticipantCount == 0) {
+            _fullCollapse();
+            return;
+        }
+
         state = TandaState.COMPLETED;
         _refundActiveParticipants();
-        if (slashedPool > 0 && activeParticipantCount > 0) {
+        if (slashedPool > 0) {
             _distributeSlashPool();
         }
         emit TandaCompleted(block.timestamp);
@@ -766,6 +804,40 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
             }
         }
         IMitandaCompletionNFT(completionNFT).batchMint(actives, tandaId);
+    }
+
+    /// @dev Full-collapse settlement: every participant defaulted.
+    ///      Platform is lender-of-last-resort — the entire token
+    ///      balance (including any pendingWithdrawals that were
+    ///      credited but never withdrawn) sweeps to treasury. All
+    ///      prior credits and insurance balances are zeroed.
+    function _fullCollapse() internal {
+        address treasuryAddr = ITandaManager(manager).treasury();
+
+        // Zero every per-address credit and insurance balance — full
+        // collapse forfeits every existing claim. The token balance
+        // is the only thing that matters; credits are rebuilt from it.
+        uint256 n = participants.length;
+        for (uint256 i = 0; i < n; i++) {
+            address p = participants[i].addr;
+            delete pendingWithdrawals[p];
+            delete insuranceBalance[p];
+        }
+        delete pendingWithdrawals[creator];
+        delete pendingWithdrawals[treasuryAddr];
+
+        // Sweep entire token balance to treasury.
+        uint256 sweepable = IERC20(token).balanceOf(address(this));
+        pendingWithdrawals[treasuryAddr] = sweepable;
+        totalPendingCredits = sweepable;
+
+        slashedPool = 0;
+        totalInsuranceReserve = 0;
+
+        state = TandaState.COMPLETED;
+
+        emit FullCollapse(treasuryAddr, sweepable);
+        // No Completion NFTs minted — by definition nobody completed honestly.
     }
 
     /// @dev Refund each active participant's insurance balance + any

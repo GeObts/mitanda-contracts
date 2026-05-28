@@ -99,6 +99,15 @@ Defensive: a balance assertion checks `balanceOf(this) >= totalPendingCredits + 
 
 Honest participants get their own insurance back plus a pro-rata share of defaulters' forfeited insurance — a real cash reward for staying paid up. Defaulters lose only their accumulated premiums (not their past contributions, which were already cycled through).
 
+### Auto-completion on defaulter pruning
+
+`markDefaulter` auto-completes the tanda when pruning drives `payoutOrder.length < currentCycle`. Without this, future-slot pruning could shrink `payoutOrder` below the next index `triggerPayout` would read, causing an out-of-bounds panic and locking the tanda in ACTIVE forever. Two sub-paths, both inside `_completeTanda`:
+
+- **Partial survival** (`activeParticipantCount > 0`): normal completion runs — surviving actives get insurance refund, excess-contribution refund (for cycles they pre-paid that won't run), slash-pool 95/2/3 share, and Completion NFTs.
+- **Full collapse** (`activeParticipantCount == 0`): every participant defaulted. Platform is lender-of-last-resort — the entire token balance sweeps to treasury via `_fullCollapse`. All prior `pendingWithdrawals` (including past cycle-recipient credits not yet withdrawn) and insurance balances are zeroed and absorbed into the treasury credit. No Completion NFTs minted. `FullCollapse(treasury, amount)` event emitted.
+
+`_completeTanda` routes both call sites (existing natural completion via `triggerPayout`, and the new `markDefaulter` auto-complete) through the same early-return branch on `activeParticipantCount == 0`, so any future code path that produces a zero-active completion gets correct full-collapse semantics for free.
+
 ## Tanda privacy & scheduled start
 
 ### Scheduled start
