@@ -748,6 +748,17 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
         return addressToTandaId[candidate] != 0;
     }
 
+    /// @notice Total number of tandas ever created by this Manager.
+    /// @dev    Equals `nextTandaId - 1` (since IDs start at 1). Includes
+    ///         tandas in every state: OPEN, ACTIVE, and COMPLETED.
+    ///         Returns 0 before any tanda has been created.
+    /// @return count Total tandas created.
+    function tandaCount() external view returns (uint256 count) {
+        unchecked {
+            count = nextTandaId == 0 ? 0 : nextTandaId - 1;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Owner — pause / unpause
     // ─────────────────────────────────────────────────────────────────────
