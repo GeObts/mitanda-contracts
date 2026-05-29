@@ -1,2 +1,3 @@
-*
-!.gitignore
+# Ignore per-chain deployment JSON outputs (chainId.json files produced by Deploy.s.sol)
+# Markdown docs and other tracked artifacts are NOT ignored.
+*.json
