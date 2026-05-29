@@ -32,3 +32,24 @@ Network: Base Sepolia (chainId 84532)
 - 2 gwei gas lane is correct and fulfills
 - 2.5M callback gas limit has ample headroom for 3-participant shuffle
 - Soulbound Pass NFT minting via onlyTanda gate
+
+## Pass NFT baseURI fix
+After verification, the Pass NFT baseURI was pointed at the Pinata-hosted folder. The Pass NFT does NOT snapshot per-token, so this single tx retroactively fixes Alice/Bob/Carol's already-minted tokens 1-3.
+
+- Pass folder CID: bafybeieyb646kb6vhew4ngkdqpmelf5rlbqupkkds2dtwnjictwb7nmpk4
+- setBaseURI tx: 0x174726fccb50ef9a751f072476c95e12ce943b73940bcbfa99f07bfe10f2121a
+- Verified tokenURI(1): ipfs://bafybeieyb646kb6vhew4ngkdqpmelf5rlbqupkkds2dtwnjictwb7nmpk4/1.json
+
+## Bitso sponsored collection (collection #2)
+Sponsor-per-tanda architecture confirmed as intended behavior: a tanda's sponsoredCollectionId is snapshot at creation time and immutable for the tanda's lifetime. Sponsors pay for a time slot; every tanda created during their slot inherits their branding for life and can never be rugged mid-lifecycle.
+
+Bitso registered as the second sponsored collection and activated. From this point forward, every newly-created tanda will snapshot Bitso (collectionId 2) at creation and serve Bitso-branded receipts on each cycle payout.
+
+- Bitso folder CID: bafybeic7m7e7j7mrygc3ybccu65rl7wwqbsaommzq4fnziim6lxmehfqdi
+- Name: "Bitso - Semana 1"
+- Royalty receiver: 0x70D3a9aA7e10070d3F528e91c9bCf5158c922C66 (treasury)
+- Royalty bps: 250 (2.5%)
+- registerCollection tx: 0x4f0210dacefd0c3de6c9f788f8daf4c7a7391c15e40bc390cef0993b02480522
+- setActiveCollection(2) tx: 0x14c78e2810fb7eb5fba301251a7a396f3a6df72b8ede1346f0201d29844e096c
+
+The test tanda (tandaId 1) was created BEFORE Bitso was registered, so it remains snapshot-bound to collection 1 (Mi Tanda Genesis, placeholder URI). Its receipts on cycle 1-3 will reflect the original Genesis placeholder. This is correct behavior per the sponsor-per-tanda model — kept as historical record of the integration test, not a customer-facing demo.
