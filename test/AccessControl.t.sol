@@ -232,6 +232,7 @@ contract AccessControlTest is MitandaTestBase {
 
         manager.unpause();
         // Now succeeds.
+        _enableCreate(alice, CONTRIBUTION);
         vm.prank(alice);
         uint256 tandaId =
             manager.createTanda(address(usdc), CONTRIBUTION, 1 days, 3, 1 days, 0, ITanda.TandaPrivacy.PUBLIC);

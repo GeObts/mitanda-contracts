@@ -5,6 +5,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {MitandaTestBase} from "./helpers/MitandaTestBase.sol";
 import {Tanda} from "../src/Tanda.sol";
 import {ITanda} from "../src/interfaces/ITanda.sol";
+import {ERC1271Wallet} from "./mocks/ERC1271Wallet.sol";
 import {
     NotPublicTanda,
     NotPrivateTanda,
@@ -49,6 +50,7 @@ contract TandaPrivacyTest is MitandaTestBase {
     // ────────────────────────────────────────────────────────────────
 
     function _createPrivateTanda() internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(signingCreator, CONTRIBUTION);
         vm.prank(signingCreator);
         tandaId = manager.createTanda(
             address(usdc),
@@ -63,6 +65,7 @@ contract TandaPrivacyTest is MitandaTestBase {
     }
 
     function _createScheduledPublic(uint256 schedStart) internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(alice, CONTRIBUTION);
         vm.prank(alice);
         tandaId = manager.createTanda(
             address(usdc),
@@ -115,9 +118,10 @@ contract TandaPrivacyTest is MitandaTestBase {
         (address tandaAddr,) = _createDefaultTanda(alice); // base default is PUBLIC
         Tanda t = Tanda(tandaAddr);
 
-        // Plain join works.
+        // Plain join works. Creator (alice) is auto-enrolled at create, so
+        // after bob joins the active count is 2.
         _joinTanda(tandaAddr, bob);
-        assertEq(t.activeParticipantCount(), 1, "bob joined publicly");
+        assertEq(t.activeParticipantCount(), 2, "alice (creator) + bob");
         assertTrue(t.isParticipant(bob), "bob is participant");
 
         // joinWithInvite reverts NotPrivateTanda. Signature can be empty —
@@ -155,9 +159,74 @@ contract TandaPrivacyTest is MitandaTestBase {
         t.joinWithInvite(deadline, sig);
 
         assertTrue(t.isParticipant(alice), "alice is participant");
-        assertEq(t.activeParticipantCount(), 1, "active count");
-        assertEq(t.getParticipant(0).paidUntilCycle, 1, "alice paidUntilCycle");
+        // Creator (signingCreator) is auto-enrolled as participant #0, alice
+        // joins via invite as #1, so the active count is 2.
+        assertEq(t.activeParticipantCount(), 2, "creator + alice");
+        assertEq(t.getParticipant(1).paidUntilCycle, 1, "alice paidUntilCycle");
         assertTrue(passNFT.hasPass(alice, tandaId), "alice has pass NFT");
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Scenario 2b: SMART-ACCOUNT (ERC-1271) creator — invite validates
+    // (Before the SignatureChecker change this reverted InviteSignerNotCreator.)
+    // ────────────────────────────────────────────────────────────────
+
+    uint256 internal constant SMART_OWNER_PK = 0x5A11;
+
+    function _createPrivateTandaBy(address creator) internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(creator, CONTRIBUTION);
+        vm.prank(creator);
+        tandaId = manager.createTanda(
+            address(usdc),
+            CONTRIBUTION,
+            DEFAULT_PAYOUT_INTERVAL,
+            DEFAULT_PARTICIPANT_COUNT,
+            DEFAULT_GRACE_PERIOD,
+            0,
+            ITanda.TandaPrivacy.PRIVATE_TICKETED
+        );
+        tandaAddr = manager.tandaIdToAddress(tandaId);
+    }
+
+    function test_invite_smartAccountCreator_joinWithInviteSucceeds() public {
+        // The tanda creator is a deployed ERC-1271 smart-contract wallet.
+        ERC1271Wallet wallet = new ERC1271Wallet(vm.addr(SMART_OWNER_PK));
+        (address tandaAddr,) = _createPrivateTandaBy(address(wallet));
+        Tanda t = Tanda(tandaAddr);
+        assertEq(t.creator(), address(wallet), "creator is the smart-contract wallet");
+
+        // The wallet's owner signs the EIP-712 digest; the contract validates it
+        // via ERC-1271 (isValidSignature). SignatureChecker accepts it.
+        uint256 deadline = block.timestamp + 1 days;
+        bytes memory sig = _signInvite(tandaAddr, alice, deadline, SMART_OWNER_PK);
+        _fundAndApprove(alice, CHARGE_PER_CYCLE, tandaAddr);
+
+        vm.expectEmit(true, false, false, true, tandaAddr);
+        emit ParticipantJoinedViaInvite(alice, block.timestamp, deadline);
+
+        vm.prank(alice);
+        t.joinWithInvite(deadline, sig);
+
+        assertTrue(t.isParticipant(alice), "alice joined via smart-account invite");
+        // Smart-account creator is auto-enrolled as #0, alice joins via invite
+        // as #1, so the active count is 2.
+        assertEq(t.activeParticipantCount(), 2, "creator wallet + alice");
+        assertTrue(t.isParticipant(address(wallet)), "creator wallet enrolled at create");
+    }
+
+    function test_invite_smartAccountCreator_wrongOwner_reverts() public {
+        ERC1271Wallet wallet = new ERC1271Wallet(vm.addr(SMART_OWNER_PK));
+        (address tandaAddr,) = _createPrivateTandaBy(address(wallet));
+        Tanda t = Tanda(tandaAddr);
+
+        // A key that is NOT the wallet's owner signs — ERC-1271 returns invalid.
+        uint256 deadline = block.timestamp + 1 days;
+        bytes memory badSig = _signInvite(tandaAddr, alice, deadline, ATTACKER_PK);
+        _fundAndApprove(alice, CHARGE_PER_CYCLE, tandaAddr);
+
+        vm.expectRevert(InviteSignerNotCreator.selector);
+        vm.prank(alice);
+        t.joinWithInvite(deadline, badSig);
     }
 
     // ────────────────────────────────────────────────────────────────

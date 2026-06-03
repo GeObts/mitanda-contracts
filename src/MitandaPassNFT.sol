@@ -116,10 +116,13 @@ contract MitandaPassNFT is ERC721, Ownable {
     /// @notice Mint a pass to `participant` for `tandaId`. Only callable
     ///         by `Tanda` clones registered in the Manager.
     /// @dev    One pass per `(participant, tandaId)` pair, enforced by
-    ///         the `participantTandaToTokenId` lookup. All reverse
-    ///         lookups are populated BEFORE `_safeMint` so the contract
-    ///         is never in a half-state (even if the mint callback
-    ///         reverts, the whole tx rolls back).
+    ///         the `participantTandaToTokenId` lookup. Uses `_mint` (not
+    ///         `_safeMint`): the pass is soulbound (EIP-5192, never
+    ///         transferable), so the `onERC721Received` receiver check
+    ///         adds no safety — it only introduces an external call with a
+    ///         callback into the join/create critical path, and would block
+    ///         contract wallets that don't implement the hook from ever
+    ///         joining. `_mint` removes that callback and admits any account.
     /// @param participant Address receiving the pass.
     /// @param tandaId     ID of the originating tanda.
     /// @return tokenId    The newly minted token ID (1-indexed).
@@ -139,7 +142,7 @@ contract MitandaPassNFT is ERC721, Ownable {
         passTandaId[tokenId] = tandaId;
         passTandaAddress[tokenId] = msg.sender;
 
-        _safeMint(participant, tokenId);
+        _mint(participant, tokenId);
 
         emit PassMinted(tokenId, participant, tandaId, msg.sender);
         emit Locked(tokenId);

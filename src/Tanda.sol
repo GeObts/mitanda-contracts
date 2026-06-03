@@ -7,7 +7,7 @@ import {EIP712Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/crypt
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 
 import {ITanda} from "./interfaces/ITanda.sol";
 import "./MitandaErrors.sol";
@@ -412,8 +412,10 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
     ///         the creator via `revokeInvite`.
     /// @param deadline  Latest `block.timestamp` at which this invite is
     ///                  still redeemable.
-    /// @param signature Creator's 65-byte ECDSA signature over the
-    ///                  EIP-712 typed-data digest.
+    /// @param signature Creator's signature over the EIP-712 typed-data
+    ///                  digest. Validated via SignatureChecker, so either a
+    ///                  65-byte EOA ECDSA signature or an ERC-1271
+    ///                  smart-account signature is accepted.
     /// @custom:reverts WrongTandaState         if not OPEN.
     /// @custom:reverts NotPrivateTanda         if privacy is PUBLIC.
     /// @custom:reverts InviteExpired           if `block.timestamp > deadline`.
@@ -438,8 +440,13 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
 
         bytes32 structHash = keccak256(abi.encode(INVITE_TYPEHASH, msg.sender, tandaId, deadline));
         bytes32 digest = _hashTypedDataV4(structHash);
-        address signer = ECDSA.recover(digest, signature);
-        if (signer != creator) revert InviteSignerNotCreator();
+        // SignatureChecker validates both EOA (ECDSA) and ERC-1271 smart-account
+        // signatures, so smart-account creators (e.g. Privy) can issue invites.
+        // The creator's account is always deployed by redeem time (they sent the
+        // createTanda tx), so plain ERC-1271 is sufficient — no ERC-6492 needed.
+        if (!SignatureChecker.isValidSignatureNow(creator, digest, signature)) {
+            revert InviteSignerNotCreator();
+        }
 
         // Mark used BEFORE joining (CEI: state writes before external call
         // in _joinInternal's safeTransferFrom).
@@ -497,6 +504,49 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
     ///      `contributionAmount` the premium may be zero.
     function _premiumPerCycle() internal view returns (uint256) {
         return (contributionAmount * INSURANCE_BPS) / BPS_DENOMINATOR;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Manager: enrollCreator (charge-at-create)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// @notice Enroll the creator as the first participant at creation.
+    /// @dev    Called exactly once by `TandaManager.createTanda`, AFTER the
+    ///         Manager has already pulled the creator's first contribution +
+    ///         insurance premium into this clone (the creator approves the
+    ///         Manager, not the not-yet-deployed clone). So this mirrors
+    ///         `_joinInternal` EXACTLY except:
+    ///           - it does NOT `safeTransferFrom` (the Manager funded the
+    ///             clone), and
+    ///           - it never auto-starts (a single participant can never fill
+    ///             a tanda — `participantCount` is always >= 2).
+    ///         `paidUntilCycle = 1` (cycle 1 covered) and the premium lands
+    ///         in `insuranceBalance`, identical to a normal join.
+    /// @custom:reverts CallerNotManager if not called by the Manager.
+    /// @custom:reverts WrongTandaState  if not OPEN.
+    /// @custom:reverts NotCreator       if `creator_` is not the recorded creator.
+    /// @custom:reverts AlreadyJoined    if the creator is already enrolled.
+    /// @custom:emits   ParticipantJoined.
+    function enrollCreator(address creator_) external override onlyManager onlyInState(TandaState.OPEN) {
+        if (creator_ != creator) revert NotCreator();
+        if (addressToParticipantIndex[creator_] != 0) revert AlreadyJoined();
+
+        uint256 premium = _premiumPerCycle();
+
+        participants.push(
+            Participant({addr: creator_, paidUntilCycle: 1, isActive: true, joinTimestamp: block.timestamp})
+        );
+        addressToParticipantIndex[creator_] = participants.length;
+        activeParticipantCount++;
+
+        insuranceBalance[creator_] += premium;
+        totalInsuranceReserve += premium;
+
+        emit ParticipantJoined(creator_, block.timestamp);
+
+        // Soulbound Pass NFT. The clone is already registered in the Manager
+        // (registration precedes initialize in createTanda), so onlyTanda passes.
+        IMitandaPassNFT(passNFT).mint(creator_, tandaId);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -630,7 +680,7 @@ contract Tanda is ITanda, Initializable, ReentrancyGuardUpgradeable, EIP712Upgra
     /// @custom:reverts NotDefaulter              if `paidUntilCycle >= currentCycle`.
     /// @custom:reverts GracePeriodNotExpired     if called before deadline + grace.
     /// @custom:emits   ParticipantDefaulted, plus TandaCompleted or FullCollapse if auto-completion fires.
-    function markDefaulter(address participant) external onlyInState(TandaState.ACTIVE) {
+    function markDefaulter(address participant) external nonReentrant onlyInState(TandaState.ACTIVE) {
         uint256 idxPlus1 = addressToParticipantIndex[participant];
         if (idxPlus1 == 0) revert NotParticipant();
         uint256 idx = idxPlus1 - 1;

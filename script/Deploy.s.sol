@@ -42,7 +42,9 @@ contract Deploy is Script {
 
     /// @dev Salt for the Manager CREATE2. Bump the version segment if
     ///      a future Manager re-deploy needs a different address.
-    bytes32 internal constant MANAGER_SALT = keccak256("MiTanda.v1.Manager");
+    ///      v2: SignatureChecker invite verification (ERC-1271 smart-account
+    ///      creators) — requires a fresh implementation + Manager.
+    bytes32 internal constant MANAGER_SALT = keccak256("MiTanda.v2.Manager");
 
     string internal constant DEFAULT_FALLBACK_URI = "ipfs://QmReplaceWithRealCID";
     uint32 internal constant DEFAULT_CALLBACK_GAS = 2_500_000;
@@ -99,8 +101,7 @@ contract Deploy is Script {
 
         // 3. Predict addresses
         uint256 startNonce = vm.getNonce(deployer);
-        Predicted memory pred =
-            _predict(deployer, startNonce, cfg, subId, callbackGas, treasury, deployer);
+        Predicted memory pred = _predict(deployer, startNonce, cfg, subId, callbackGas, treasury, deployer);
 
         _logPredictions(cfg, deployer, treasury, startNonce, pred);
 
@@ -124,10 +125,7 @@ contract Deploy is Script {
     // Pre-flight
     // ─────────────────────────────────────────────────────────────────
 
-    function _preflightChecks(ChainConfig memory cfg, address treasury, uint256 subId, address deployer)
-        internal
-        view
-    {
+    function _preflightChecks(ChainConfig memory cfg, address treasury, uint256 subId, address deployer) internal view {
         require(deployer != address(0), "deployer is zero - check DEPLOYER_PRIVATE_KEY");
         require(treasury != address(0), "TREASURY_ADDRESS is zero");
         require(subId != 0, "VRF_SUBSCRIPTION_ID is zero - create a subscription at vrf.chain.link");
@@ -190,11 +188,14 @@ contract Deploy is Script {
             return ChainConfig({
                 name: "Arbitrum Sepolia",
                 vrfCoordinator: 0x5CE8D5A2BC84beb22a398CCA51996F7930313D61,
-                // TODO: Fill in Arbitrum Sepolia gas lane keyHash from
+                // 50 gwei key hash per Chainlink VRF v2.5 docs:
                 // https://docs.chain.link/vrf/v2-5/supported-networks#arbitrum-sepolia-testnet
-                gasLane: bytes32(0),
-                usdc: address(0), // no canonical USDC on Arbitrum Sepolia
-                mxnb: 0xF197FFC28c23E0309B5559e7a166f2c6164C80aA
+                gasLane: 0x1770bdc7eec7771f7ba4ffd640f34260d7f095b79c92d34a5b2551d6f6cfd2be,
+                // Circle USDC on Arbitrum Sepolia (verified on-chain: symbol USDC, 6 decimals).
+                usdc: 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d,
+                // Mock "MXNB" test token (MockERC20, 6 decimals) — no canonical MXNB
+                // on Arbitrum Sepolia; the mainnet address has no code here.
+                mxnb: 0xD55c72B7fF4777D382Bd69b9B27Cc1da799d119d
             });
         } else {
             revert("Unsupported chain");
@@ -239,9 +240,7 @@ contract Deploy is Script {
         p.manager = address(
             uint160(
                 uint256(
-                    keccak256(
-                        abi.encodePacked(bytes1(0xff), DETERMINISTIC_DEPLOYER, MANAGER_SALT, keccak256(initCode))
-                    )
+                    keccak256(abi.encodePacked(bytes1(0xff), DETERMINISTIC_DEPLOYER, MANAGER_SALT, keccak256(initCode)))
                 )
             )
         );
@@ -433,7 +432,8 @@ contract Deploy is Script {
         vm.serializeAddress(contractsObj, "TandaImplementation", address(d.tandaImpl));
         vm.serializeAddress(contractsObj, "MitandaPassNFT", address(d.passNFT));
         vm.serializeAddress(contractsObj, "MitandaReceiptNFT", address(d.receiptNFT));
-        string memory contractsJson = vm.serializeAddress(contractsObj, "MitandaCompletionNFT", address(d.completionNFT));
+        string memory contractsJson =
+            vm.serializeAddress(contractsObj, "MitandaCompletionNFT", address(d.completionNFT));
 
         string memory tokensObj = "tokens";
         string memory tokensJson = "{}";
@@ -515,7 +515,9 @@ contract Deploy is Script {
         console.log("   forge verify-contract <address> <ContractName> --chain", cfg.name);
         console.log("   (run for: TandaManager, Tanda impl, MitandaPassNFT, MitandaReceiptNFT, MitandaCompletionNFT)");
         console.log("");
-        console.log("4. Update Receipt NFT fallback baseURI to the real CID (if INITIAL_FALLBACK_BASE_URI was the placeholder):");
+        console.log(
+            "4. Update Receipt NFT fallback baseURI to the real CID (if INITIAL_FALLBACK_BASE_URI was the placeholder):"
+        );
         console.log("   cast send <receiptNFT> 'setDefaultFallbackBaseURI(string)' 'ipfs://<realCID>'");
         console.log("===========================");
     }

@@ -18,3 +18,7 @@ docs/
 .env
 .env.*
 !.env.example
+
+# IPFS upload staging folders — content is published to Pinata, not git
+ipfs-pass/
+ipfs-bitso/

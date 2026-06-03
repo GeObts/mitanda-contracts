@@ -108,9 +108,10 @@ contract MitandaCompletionNFT is ERC721, Ownable {
     ///         independently per iteration; a duplicate within the
     ///         batch reverts the entire tx, rolling back all prior
     ///         iterations' writes — there's no half-batch state in
-    ///         storage. State writes for each badge happen BEFORE
-    ///         `_safeMint`, preserving the same atomicity invariant as
-    ///         `MitandaPassNFT.mint`.
+    ///         storage. Uses `_mint` (not `_safeMint`): completion badges
+    ///         are soulbound, so the receiver check adds no safety and would
+    ///         let a single non-receiver participant block completion for
+    ///         everyone. `_mint` keeps completion unblockable.
     /// @param participants Addresses receiving badges. Order matters
     ///                     only for the returned `tokenIds` array.
     /// @param tandaId      ID of the completing tanda.
@@ -141,7 +142,7 @@ contract MitandaCompletionNFT is ERC721, Ownable {
             completionTandaId[tokenId] = tandaId;
             completionTandaAddress[tokenId] = msg.sender;
 
-            _safeMint(participant, tokenId);
+            _mint(participant, tokenId);
 
             tokenIds[i] = tokenId;
 

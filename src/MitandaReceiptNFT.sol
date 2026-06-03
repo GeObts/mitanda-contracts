@@ -219,7 +219,15 @@ contract MitandaReceiptNFT is ERC721, ERC2981, Ownable {
             _setTokenRoyalty(tokenId, frozenReceiver, frozenBps);
         }
 
-        _safeMint(recipient, tokenId);
+        // `_mint`, not `_safeMint`: this mint sits in `Tanda.triggerPayout`'s
+        // critical path. With Pass minting via `_mint`, a participant may be a
+        // contract that doesn't implement `onERC721Received`; a `_safeMint`
+        // here would then revert at that participant's payout cycle and lock
+        // the tanda in ACTIVE forever. The financial payout is pull-payment
+        // (pendingWithdrawals), so the receipt is purely a collectible — never
+        // let it block liveness. (A non-receiver recipient simply can't move
+        // its own receipt, which is its wallet's concern, not the protocol's.)
+        _mint(recipient, tokenId);
 
         emit ReceiptMinted(tokenId, recipient, tandaId, cycle, collectionId, frozenURI, frozenReceiver, frozenBps);
     }

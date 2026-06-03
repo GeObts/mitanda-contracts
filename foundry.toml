@@ -14,4 +14,10 @@ evm_version = "paris"
 # They are never compiled, tested, or deployed by this project.
 skip = ["src/legacy/**/*.sol"]
 
+# Whitelist the deployments/ directory so Deploy.s.sol can write its
+# per-chain JSON output via vm.writeJson. Without this, Foundry's
+# default filesystem sandbox blocks the write with
+# "the path ... is not allowed to be accessed for write operations".
+fs_permissions = [{ access = "read-write", path = "./deployments/" }]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

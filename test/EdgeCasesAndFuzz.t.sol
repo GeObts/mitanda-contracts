@@ -46,6 +46,7 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         internal
         returns (address tandaAddr, uint256 tandaId)
     {
+        _enableCreate(creator, contribution);
         vm.prank(creator);
         tandaId = manager.createTanda(
             address(usdc),
@@ -125,8 +126,12 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         (address tandaAddr,) = _createCustomTanda(alice, 50, CONTRIBUTION);
         Tanda t = Tanda(tandaAddr);
 
+        // The creator (alice) is auto-enrolled as participant #0, so the
+        // 50 participants are alice + 49 generated users. users[i] == the
+        // i-th participant (creator first, then join order).
         address[] memory users = new address[](50);
-        for (uint256 i = 0; i < 50; i++) {
+        users[0] = alice;
+        for (uint256 i = 1; i < 50; i++) {
             users[i] = makeAddr(string.concat("user_", vm.toString(i)));
         }
 
@@ -149,10 +154,17 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         _warpToNextCycle(tandaAddr);
         t.triggerPayout();
 
+        // The creator (alice) is also a participant, so she may be the cycle-1
+        // recipient. Organizer fee (150) always goes to alice; the recipient
+        // share (4750) goes to whoever drew slot 0 — which may be alice too.
         address cycle1Recipient = users[order[0]];
-        assertEq(t.pendingWithdrawals(cycle1Recipient), 4750 * USDC, "cycle1 recipient");
         assertEq(t.pendingWithdrawals(TREASURY), 100 * USDC, "treasury cycle1");
-        assertEq(t.pendingWithdrawals(alice), 150 * USDC, "alice organizer cycle1");
+        if (cycle1Recipient == alice) {
+            assertEq(t.pendingWithdrawals(alice), (4750 + 150) * USDC, "alice recipient + organizer");
+        } else {
+            assertEq(t.pendingWithdrawals(cycle1Recipient), 4750 * USDC, "cycle1 recipient");
+            assertEq(t.pendingWithdrawals(alice), 150 * USDC, "alice organizer cycle1");
+        }
 
         assertEq(t.currentCycle(), 2, "advanced to cycle 2");
     }
@@ -175,16 +187,22 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         (address tandaAddr, uint256 tandaId) = _createCustomTanda(alice, 5, CONTRIBUTION);
         Tanda t = Tanda(tandaAddr);
 
-        address[] memory users = new address[](5);
+        // alice (creator) is auto-enrolled as participant #0; bob..eve join.
+        // So the 5 participants are [alice, bob, carol, dave, eve], and alice
+        // ALSO collects organizer fees on top of her participant outcome.
+        address[] memory users = new address[](4);
         users[0] = bob;
         users[1] = carol;
         users[2] = dave;
         users[3] = eve;
-        users[4] = frank;
         _fillAndStart(tandaAddr, users, uint256(keccak256("seed_alldef")));
 
+        // Organizer fees alice collects regardless of her participant role:
+        // cycle1 (15) + cycle2 (3) + slash-pool org (1.2) = 19.2 USDC.
+        uint256 orgFees = 18 * USDC + 1_200_000;
+
         uint256[] memory order = t.getPayoutOrder();
-        address[5] memory pArr = [bob, carol, dave, eve, frank];
+        address[5] memory pArr = [alice, bob, carol, dave, eve];
         address cycle1Recipient = pArr[order[0]];
         address survivor = pArr[order[4]];
 
@@ -199,7 +217,6 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         // Cycle 1
         _warpToNextCycle(tandaAddr);
         t.triggerPayout();
-        assertEq(t.pendingWithdrawals(cycle1Recipient), 475 * USDC, "cycle 1 pot to recipient");
 
         // Pre-cycle 2: only survivor pays.
         _makePayment(tandaAddr, survivor, 1);
@@ -214,7 +231,7 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         assertEq(t.activeParticipantCount(), 1, "1 active");
         // payoutOrder: cycle1Recipient's past slot kept + survivor's slot kept = 2.
         assertEq(t.getPayoutOrder().length, 2, "payoutOrder shrunk to 2");
-        // slashPool: 4 × 10 USDC = 40 USDC
+        // slashPool: 4 × 10 USDC = 40 USDC (still 4 defaulters regardless of who).
         assertEq(t.slashedPool(), 40 * USDC, "slash pool collected");
 
         // Cycle 2 trigger — pays survivor (pot = 100, 95/2/3 split).
@@ -228,23 +245,27 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         assertFalse(completionNFT.hasCompletion(def3, tandaId));
         assertFalse(completionNFT.hasCompletion(def4, tandaId));
 
-        // Survivor: cycle 2 recipient (95) + insurance refund (20) + slash share (38) = 153 USDC
-        uint256 expSurvivor = 95 * USDC + 20 * USDC + 38 * USDC;
-        assertEq(t.pendingWithdrawals(survivor), expSurvivor, "survivor exact");
-
-        // Cycle 1 recipient: keeps their 475 (no insurance refund, no slash share — inactive)
-        assertEq(t.pendingWithdrawals(cycle1Recipient), 475 * USDC, "cycle1 recipient kept");
-
-        // Other defaulters: nothing
-        assertEq(t.pendingWithdrawals(def2), 0);
-        assertEq(t.pendingWithdrawals(def3), 0);
-        assertEq(t.pendingWithdrawals(def4), 0);
+        // Payouts. The 5-participant math is unchanged from before; the only
+        // difference is the creator (alice) is one of the 5 AND additionally
+        // collects 19.2 USDC organizer fees on top of her participant role.
+        //   survivor: cycle 2 recipient (95) + insurance refund (20) + slash share (38) = 153
+        //   cycle 1 recipient (past-slot defaulter): keeps their 475
+        //   other future-slot defaulters: 0 from the participant side
+        assertEq(t.pendingWithdrawals(survivor), 153 * USDC + (survivor == alice ? orgFees : 0), "survivor");
+        assertEq(
+            t.pendingWithdrawals(cycle1Recipient), 475 * USDC + (cycle1Recipient == alice ? orgFees : 0), "cycle1 kept"
+        );
+        assertEq(t.pendingWithdrawals(def2), def2 == alice ? orgFees : 0, "def2");
+        assertEq(t.pendingWithdrawals(def3), def3 == alice ? orgFees : 0, "def3");
+        assertEq(t.pendingWithdrawals(def4), def4 == alice ? orgFees : 0, "def4");
 
         // Treasury: cycle 1 platform (10) + cycle 2 platform (2) + slash platform (0.8) = 12.8 USDC
         assertEq(t.pendingWithdrawals(TREASURY), 10 * USDC + 2 * USDC + 800_000, "treasury exact");
 
-        // Alice (creator-only): organizer fees (15 c1 + 3 c2 = 18 USDC) + slash org (1.2 USDC)
-        assertEq(t.pendingWithdrawals(alice), 18 * USDC + 1_200_000, "alice organizer exact");
+        // Conservation: the clone holds exactly the sum of all credited balances.
+        uint256 totalCredits = t.pendingWithdrawals(alice) + t.pendingWithdrawals(bob) + t.pendingWithdrawals(carol)
+            + t.pendingWithdrawals(dave) + t.pendingWithdrawals(eve) + t.pendingWithdrawals(TREASURY);
+        assertEq(usdc.balanceOf(tandaAddr), totalCredits, "conservation: balance == sum of credits");
     }
 
     /// @dev Verifies the auto-completion path triggered by future-slot
@@ -260,16 +281,20 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         (address tandaAddr, uint256 tandaId) = _createCustomTanda(alice, 5, CONTRIBUTION);
         Tanda t = Tanda(tandaAddr);
 
-        address[] memory users = new address[](5);
+        // alice (creator) is auto-enrolled as participant #0; bob..eve join.
+        address[] memory users = new address[](4);
         users[0] = bob;
         users[1] = carol;
         users[2] = dave;
         users[3] = eve;
-        users[4] = frank;
         _fillAndStart(tandaAddr, users, uint256(keccak256("seed_oob")));
 
+        // Organizer fees alice collects: cycle 1 (15) + slash org (1.2) = 16.2
+        // USDC (this scenario auto-completes at cycle 2 — no cycle-2 payout).
+        uint256 orgFees = 15 * USDC + 1_200_000;
+
         uint256[] memory order = t.getPayoutOrder();
-        address[5] memory pArr = [bob, carol, dave, eve, frank];
+        address[5] memory pArr = [alice, bob, carol, dave, eve];
         address survivor = pArr[order[0]]; // cycle 1 recipient = survivor
 
         address[] memory defaulters = new address[](4);
@@ -278,10 +303,9 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         defaulters[2] = pArr[order[3]];
         defaulters[3] = pArr[order[4]];
 
-        // Cycle 1 — survivor receives 475 USDC.
+        // Cycle 1 — survivor receives the pot.
         _warpToNextCycle(tandaAddr);
         t.triggerPayout();
-        assertEq(t.pendingWithdrawals(survivor), 475 * USDC, "cycle 1 pot to survivor");
 
         // Pre-cycle 2: only the survivor pays (others become defaulters).
         _makePayment(tandaAddr, survivor, 1);
@@ -299,35 +323,26 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         assertEq(t.getPayoutOrder().length, 1, "payoutOrder shrunk to 1");
         assertEq(t.activeParticipantCount(), 1, "1 active");
 
-        // Survivor breakdown (exact):
-        //   475 USDC cycle 1 recipient (already credited at cycle 1 trigger)
-        // +  20 USDC insurance refund (2 cycles paid × 10 USDC premium)
-        // + 100 USDC excess contribution refund (paidUntilCycle=2 minus payoutOrder.length=1)
-        // +  38 USDC slash pool share (95% of 40 USDC pool, /1 active)
-        // = 633 USDC
-        assertEq(t.pendingWithdrawals(survivor), 633 * USDC, "survivor exact");
+        // Survivor breakdown (exact, 5-participant math unchanged):
+        //   475 cycle 1 recipient + 20 insurance refund + 100 excess contribution
+        // + 38 slash share = 633 USDC; plus 16.2 organizer fees if survivor == alice.
+        assertEq(t.pendingWithdrawals(survivor), 633 * USDC + (survivor == alice ? orgFees : 0), "survivor exact");
 
         // Treasury: 10 cycle-1 platform + 0.8 slash platform = 10.8 USDC
         assertEq(t.pendingWithdrawals(TREASURY), 10 * USDC + 800_000, "treasury exact");
 
-        // Alice (creator-only): 15 cycle-1 organizer + 1.2 slash organizer = 16.2 USDC
-        assertEq(t.pendingWithdrawals(alice), 15 * USDC + 1_200_000, "alice exact");
-
-        // Defaulters: zero
+        // Defaulters: zero from the participant side (alice, if among them, still
+        // holds her organizer fees).
         for (uint256 i = 0; i < 4; i++) {
-            assertEq(t.pendingWithdrawals(defaulters[i]), 0, "defaulter pending zero");
+            assertEq(t.pendingWithdrawals(defaulters[i]), defaulters[i] == alice ? orgFees : 0, "defaulter pending");
             assertFalse(completionNFT.hasCompletion(defaulters[i], tandaId), "defaulter no completion NFT");
         }
         assertTrue(completionNFT.hasCompletion(survivor, tandaId), "survivor has completion NFT");
 
-        // Drain check: all four withdraw, contract goes to zero.
-        vm.prank(survivor);
-        t.withdraw();
-        vm.prank(TREASURY);
-        t.withdraw();
-        vm.prank(alice);
-        t.withdraw();
-        assertEq(usdc.balanceOf(tandaAddr), 0, "drained to zero");
+        // Conservation: the clone holds exactly the sum of all credited balances.
+        uint256 totalCredits = t.pendingWithdrawals(alice) + t.pendingWithdrawals(bob) + t.pendingWithdrawals(carol)
+            + t.pendingWithdrawals(dave) + t.pendingWithdrawals(eve) + t.pendingWithdrawals(TREASURY);
+        assertEq(usdc.balanceOf(tandaAddr), totalCredits, "conservation: balance == sum of credits");
     }
 
     /// @dev Full collapse: every participant defaults, no honest survivor.
@@ -341,26 +356,34 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         (address tandaAddr, uint256 tandaId) = _createCustomTanda(alice, 5, CONTRIBUTION);
         Tanda t = Tanda(tandaAddr);
 
-        address[] memory users = new address[](5);
+        // alice (creator) is auto-enrolled as participant #0; bob..eve join.
+        address[] memory users = new address[](4);
         users[0] = bob;
         users[1] = carol;
         users[2] = dave;
         users[3] = eve;
-        users[4] = frank;
         _fillAndStart(tandaAddr, users, uint256(keccak256("seed_fullcollapse")));
 
         uint256[] memory order = t.getPayoutOrder();
-        address[5] memory pArr = [bob, carol, dave, eve, frank];
+        address[5] memory pArr = [alice, bob, carol, dave, eve];
         address cycle1Recipient = pArr[order[0]];
 
-        // Cycle 1 triggers — 475 to recipient, 10 to treasury, 15 to alice.
+        // Cycle 1 triggers — 475 to recipient, 10 to treasury, 15 organizer to alice.
         _warpToNextCycle(tandaAddr);
         t.triggerPayout();
-        assertEq(t.pendingWithdrawals(cycle1Recipient), 475 * USDC, "cycle 1 credit before collapse");
-        assertEq(t.pendingWithdrawals(alice), 15 * USDC, "alice credit before collapse");
+        // alice gets the 15 cycle-1 organizer fee; if she is also the recipient
+        // she additionally holds the 475 pot in the same balance.
+        assertEq(
+            t.pendingWithdrawals(cycle1Recipient),
+            475 * USDC + (cycle1Recipient == alice ? 15 * USDC : 0),
+            "cycle 1 credit before collapse"
+        );
+        if (cycle1Recipient != alice) {
+            assertEq(t.pendingWithdrawals(alice), 15 * USDC, "alice credit before collapse");
+        }
         assertEq(t.pendingWithdrawals(TREASURY), 10 * USDC, "treasury credit before collapse");
 
-        // Contract balance: 5 joins × 110 = 550 USDC (no withdrawals).
+        // Contract balance: 5 participants × 110 = 550 USDC (no withdrawals).
         assertEq(usdc.balanceOf(tandaAddr), 550 * USDC, "balance pre-collapse");
 
         // Pre-cycle 2: nobody pays. Warp past grace.
@@ -410,57 +433,32 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
     // Creator not a participant
     // ────────────────────────────────────────────────────────────────
 
-    function test_creatorIsNotAParticipant() public {
-        (address tandaAddr, uint256 tandaId) = _createDefaultTanda(alice); // alice = creator only
+    /// @notice Charge-at-create: the creator is auto-enrolled as participant
+    ///         #1 and pays their first contribution + insurance premium at
+    ///         creation, exactly like join().
+    function test_creatorIsAutoEnrolledAtCreate() public {
+        uint256 premium = (CONTRIBUTION * 1_000) / 10_000;
+
+        (address tandaAddr, uint256 tandaId) = _createDefaultTanda(alice);
         Tanda t = Tanda(tandaAddr);
 
-        // bob, carol, dave fill (alice doesn't join).
-        address[] memory users = new address[](3);
-        users[0] = bob;
-        users[1] = carol;
-        users[2] = dave;
-        _fillAndStart(tandaAddr, users, uint256(keccak256("seed_creator_only")));
+        // Creator is participant #0, active, paid through cycle 1, with a Pass NFT.
+        assertTrue(t.isParticipant(alice), "creator is participant");
+        assertEq(t.activeParticipantCount(), 1, "active count 1 at create");
+        assertEq(t.getParticipant(0).addr, alice, "creator is participant 0");
+        assertEq(t.getParticipant(0).paidUntilCycle, 1, "creator paid cycle 1");
+        assertTrue(t.getParticipant(0).isActive, "creator active");
+        assertTrue(passNFT.hasPass(alice, tandaId), "creator has pass NFT");
 
-        // Alice has no participant artifacts.
-        assertFalse(t.isParticipant(alice), "alice not participant");
-        assertFalse(passNFT.hasPass(alice, tandaId), "alice no pass");
-        assertEq(t.insuranceBalance(alice), 0, "alice no insurance");
+        // Funds: creator's premium is in insurance, and the clone physically
+        // holds the full first charge (contribution + premium).
+        assertEq(t.insuranceBalance(alice), premium, "creator insurance = premium");
+        assertEq(t.totalInsuranceReserve(), premium, "reserve = premium");
+        assertEq(usdc.balanceOf(tandaAddr), CONTRIBUTION + premium, "clone holds creator's charge");
 
-        // Run cycles 1, 2, 3 to completion.
-        _warpToNextCycle(tandaAddr);
-        t.triggerPayout();
-        for (uint256 c = 2; c <= 3; c++) {
-            _makePayment(tandaAddr, bob, 1);
-            _makePayment(tandaAddr, carol, 1);
-            _makePayment(tandaAddr, dave, 1);
-            _warpToNextCycle(tandaAddr);
-            t.triggerPayout();
-        }
-
-        assertEq(uint8(t.state()), uint8(Tanda.TandaState.COMPLETED));
-
-        // Alice's pending = pure organizer fees: 3 cycles × 9 USDC = 27 USDC
-        assertEq(t.pendingWithdrawals(alice), 27 * USDC, "alice organizer-only");
-
-        // Alice has no completion NFT.
-        assertFalse(completionNFT.hasCompletion(alice, tandaId), "alice no completion");
-
-        // bob, carol, dave: each has Pass + Completion. Each = 285 (recipient) + 30 (insurance) = 315.
-        assertTrue(completionNFT.hasCompletion(bob, tandaId));
-        assertTrue(completionNFT.hasCompletion(carol, tandaId));
-        assertTrue(completionNFT.hasCompletion(dave, tandaId));
-        assertEq(t.pendingWithdrawals(bob), 315 * USDC, "bob");
-        assertEq(t.pendingWithdrawals(carol), 315 * USDC, "carol");
-        assertEq(t.pendingWithdrawals(dave), 315 * USDC, "dave");
-
-        // Treasury: 3 × 6 = 18 USDC
-        assertEq(t.pendingWithdrawals(TREASURY), 18 * USDC, "treasury");
-
-        // Alice withdraws her organizer fees.
-        uint256 before = usdc.balanceOf(alice);
-        vm.prank(alice);
-        t.withdraw();
-        assertEq(usdc.balanceOf(alice) - before, 27 * USDC, "alice withdraw");
+        // A second create-then-join fills exactly one fewer external seat.
+        _joinTanda(tandaAddr, bob);
+        assertEq(t.activeParticipantCount(), 2, "creator + bob");
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -535,7 +533,12 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
     function testFuzz_insuranceAccrual(uint256 contribution) public {
         contribution = bound(contribution, 1 * USDC, 100_000 * USDC);
 
-        // Custom 3-participant tanda
+        // Custom 3-participant tanda. The creator (alice) is auto-enrolled at
+        // create and pays the first charge then.
+        uint256 expectedPremium = (contribution * 1_000) / 10_000;
+        uint256 charge = contribution + expectedPremium;
+
+        _enableCreate(alice, contribution);
         vm.prank(alice);
         uint256 tandaId = manager.createTanda(
             address(usdc), contribution, DEFAULT_PAYOUT_INTERVAL, 3, DEFAULT_GRACE_PERIOD, 0, ITanda.TandaPrivacy.PUBLIC
@@ -543,14 +546,10 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         address tandaAddr = manager.tandaIdToAddress(tandaId);
         Tanda t = Tanda(tandaAddr);
 
-        uint256 expectedPremium = (contribution * 1_000) / 10_000;
-        uint256 charge = contribution + expectedPremium;
+        // Creator enrolled → reserve already holds one premium.
+        assertEq(t.totalInsuranceReserve(), expectedPremium, "post-create reserve");
 
-        // Three joins. The last triggers _startTanda (which requests VRF
-        // but we don't need to fulfill it for this invariant check).
-        _fundAndApprove(alice, charge, tandaAddr);
-        vm.prank(alice);
-        t.join();
+        // bob + carol join (the last fills + triggers _startTanda).
         _fundAndApprove(bob, charge, tandaAddr);
         vm.prank(bob);
         t.join();
@@ -558,7 +557,7 @@ contract EdgeCasesAndFuzzTest is MitandaTestBase {
         vm.prank(carol);
         t.join();
 
-        // After all 3 joins, insurance = 3 × premium.
+        // After all 3 participants, insurance = 3 × premium.
         assertEq(t.totalInsuranceReserve(), 3 * expectedPremium, "post-join reserve");
 
         // Each makePayment(1) — tanda is ACTIVE post-auto-start; cap

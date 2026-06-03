@@ -84,7 +84,9 @@ contract TandaLifecycleTest is MitandaTestBase {
         assertEq(t.gracePeriod(), DEFAULT_GRACE_PERIOD, "gracePeriod");
         assertEq(t.creator(), alice, "creator");
         assertEq(t.sponsoredCollectionId(), 1, "sponsoredCollectionId");
-        assertEq(t.activeParticipantCount(), 0, "activeParticipantCount after create");
+        // Charge-at-create: the creator is auto-enrolled as participant #1.
+        assertEq(t.activeParticipantCount(), 1, "activeParticipantCount after create");
+        assertTrue(t.isParticipant(alice), "creator enrolled at create");
     }
 
     function _fillAndCaptureRecipients(address tandaAddr) internal {

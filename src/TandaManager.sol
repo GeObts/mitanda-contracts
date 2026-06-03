@@ -3,6 +3,8 @@ pragma solidity 0.8.20;
 
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
@@ -24,6 +26,8 @@ import "./MitandaErrors.sol";
 ///         intentionally bypass the pause guard so randomness already
 ///         requested before a pause still lands.
 contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
+    using SafeERC20 for IERC20;
+
     // ─────────────────────────────────────────────────────────────────────
     // Constants — fees, basis points, parameter ranges
     // ─────────────────────────────────────────────────────────────────────
@@ -640,6 +644,18 @@ contract TandaManager is VRFConsumerBaseV2Plus, Pausable {
                 completionNFT: completionNFT
             })
             );
+
+        // Charge-at-create: enroll the creator as the first participant by
+        // pulling their first contribution + insurance premium into the clone,
+        // then recording them. The creator approves THIS Manager (the clone
+        // address isn't known before creation), so the Manager forwards the
+        // funds directly to the clone and the clone does the bookkeeping
+        // (mirrors join(), minus the clone-side transfer). Keeps pot accounting
+        // clean and enrolls the creator immediately. INSURANCE_BPS matches
+        // Tanda.INSURANCE_BPS (asserted by the deploy script).
+        uint256 premium = (contributionAmount * INSURANCE_BPS) / BPS_DENOMINATOR;
+        IERC20(token).safeTransferFrom(msg.sender, tandaAddress, contributionAmount + premium);
+        ITanda(tandaAddress).enrollCreator(msg.sender);
 
         emit TandaCreated(
             tandaId,

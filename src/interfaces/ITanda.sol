@@ -92,4 +92,13 @@ interface ITanda {
     ///         `onlyManager` modifier.
     /// @param randomSeed Random seed used to derive the payout order.
     function assignPayoutOrder(uint256 randomSeed) external;
+
+    /// @notice Enroll the tanda's creator as the first participant at
+    ///         creation (charge-at-create). Called once by
+    ///         `TandaManager.createTanda` AFTER it has transferred the
+    ///         creator's first contribution + insurance premium into the
+    ///         clone — so the Tanda only records state and mints the Pass
+    ///         NFT; it does NOT pull funds itself. Guarded by `onlyManager`.
+    /// @param creator The tanda's creator (the `createTanda` caller).
+    function enrollCreator(address creator) external;
 }

@@ -45,6 +45,7 @@ contract TandaDefaulterTest is MitandaTestBase {
     // ────────────────────────────────────────────────────────────────
 
     function _create5(address creator) internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(creator, CONTRIBUTION);
         vm.prank(creator);
         tandaId = manager.createTanda(
             address(usdc), CONTRIBUTION, DEFAULT_PAYOUT_INTERVAL, 5, DEFAULT_GRACE_PERIOD, 0, ITanda.TandaPrivacy.PUBLIC
@@ -53,6 +54,7 @@ contract TandaDefaulterTest is MitandaTestBase {
     }
 
     function _create4(address creator) internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(creator, CONTRIBUTION);
         vm.prank(creator);
         tandaId = manager.createTanda(
             address(usdc), CONTRIBUTION, DEFAULT_PAYOUT_INTERVAL, 4, DEFAULT_GRACE_PERIOD, 0, ITanda.TandaPrivacy.PUBLIC

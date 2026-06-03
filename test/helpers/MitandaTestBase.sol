@@ -135,10 +135,20 @@ abstract contract MitandaTestBase is Test {
         usdc.approve(spender, amount);
     }
 
+    /// @notice Fund a creator and approve the Manager for the charge-at-create
+    ///         (contribution + insurance premium). Call before any successful
+    ///         `createTanda` — the creator is auto-enrolled as participant #1
+    ///         and the Manager pulls their first cycle's funds at creation.
+    function _enableCreate(address creator, uint256 contribution) internal {
+        uint256 premium = (contribution * manager.INSURANCE_BPS()) / manager.BPS_DENOMINATOR();
+        _fundAndApprove(creator, contribution + premium, address(manager));
+    }
+
     /// @notice Create a default PUBLIC tanda from `creator`.
     /// @return tandaAddr Address of the new Tanda clone.
     /// @return tandaId   ID assigned by the Manager.
     function _createDefaultTanda(address creator) internal returns (address tandaAddr, uint256 tandaId) {
+        _enableCreate(creator, DEFAULT_CONTRIBUTION);
         vm.prank(creator);
         tandaId = manager.createTanda(
             address(usdc),
@@ -154,8 +164,11 @@ abstract contract MitandaTestBase is Test {
 
     /// @notice Fund, approve, and prank `user` to join a PUBLIC tanda.
     ///         Handles contribution + insurance premium automatically.
+    ///         Idempotent: a no-op if `user` is already a participant (e.g. the
+    ///         creator, who is auto-enrolled as participant #1 at create-time).
     function _joinTanda(address tandaAddr, address user) internal {
         Tanda t = Tanda(tandaAddr);
+        if (t.isParticipant(user)) return;
         uint256 c = t.contributionAmount();
         uint256 premium = (c * t.INSURANCE_BPS()) / t.BPS_DENOMINATOR();
         uint256 charge = c + premium;
@@ -205,15 +218,22 @@ abstract contract MitandaTestBase is Test {
         internal
         returns (uint256 requestId)
     {
-        uint256 count = users.length;
-        // Join all but the last without log recording.
-        for (uint256 i = 0; i < count - 1; i++) {
+        Tanda t = Tanda(tandaAddr);
+        // Join non-participants until the tanda fills. The creator is already
+        // enrolled (seat #1) and is skipped by _joinTanda. We record logs
+        // around whichever join actually fills the tanda (triggering the VRF
+        // request), regardless of its position in `users`.
+        for (uint256 i = 0; i < users.length; i++) {
+            if (t.isParticipant(users[i])) continue;
+            bool willFill = t.activeParticipantCount() + 1 == t.participantCount();
+            if (willFill) vm.recordLogs();
             _joinTanda(tandaAddr, users[i]);
+            if (willFill) {
+                requestId = _captureAndFulfillVRF(seed);
+                return requestId;
+            }
         }
-        // Record logs around the final join (which triggers the VRF request).
-        vm.recordLogs();
-        _joinTanda(tandaAddr, users[count - 1]);
-        requestId = _captureAndFulfillVRF(seed);
+        revert("MitandaTestBase: tanda never filled (users < remaining seats)");
     }
 
     /// @notice Warp `block.timestamp` to the moment the current cycle's
