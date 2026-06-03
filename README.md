@@ -2,6 +2,8 @@
 
 On-chain ROSCA (rotating savings club) dApp targeting Arbitrum One and Base. Mi Tanda brings Latin America's tanda savings tradition onchain with built-in defaulter insurance, automatic NFT receipts, and rotating artist/sponsor collections.
 
+> **Web app lives in a separate repo:** [**GeObts/mitanda-app**](https://github.com/GeObts/mitanda-app) — the Next.js frontend that drives these contracts (create / join / pay / claim / release / defaulter), with fork-verified UI proof. The two repos together are the full project.
+
 ## Architecture
 
 Six contracts:
